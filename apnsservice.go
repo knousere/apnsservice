@@ -1,11 +1,15 @@
 package apnsservice
 
+// This source code includes the exposed elements of the apns service. It is designed
+// to be called from main or any api handler that uses push notifications.
+
 import (
 	apns "github.com/joekarl/go-libapns"
 	"github.com/knousere/web-service-commons/utils"
 )
 
-// AppCert is a structure for passing RSA certificate associated with an App
+// AppCert is a structure for passing RSA certificate associated with an App.
+// If IsDev is non-zero then the cert is only valid for sandbox connections.
 type AppCert struct {
 	AppID  int    `json:"appId"`
 	IsDev  int    `json:"isDev"`
@@ -16,17 +20,19 @@ type AppCert struct {
 // mapAPNS stores all available APNS channels keyed by appID.
 var mapAPNS map[int]*connectionAPNS
 
-// These are Apple push notification parameters applied to all instances of connectionAPNS.
+func init() {
+	mapAPNS = make(map[int]*connectionAPNS)
+}
+
+// These are Apple push notification URLs applied to all instances of connectionAPNS.
 var pushURL string
 var feedbackURL string
 
-// InitMap initializes the APNS connection map.
-// Run this once from main.
+// InitURLs initializes the APNS gateway URLs.
+// Run this once from main before launching any connections.
 // This server is either production or development.
-func InitMap(isDev int) {
-	mapAPNS = make(map[int]*connectionAPNS)
-
-	if isDev == 1 {
+func InitURLs(isDev bool) {
+	if isDev {
 		pushURL = "gateway.sandbox.push.apple.com"
 		feedbackURL = "feedback.sandbox.push.apple.com"
 	} else {
@@ -35,8 +41,8 @@ func InitMap(isDev int) {
 	}
 }
 
-// LaunchConnection creates an initialized apns connection and adds it to the map
-// if push is enabled for this app.
+// LaunchConnection creates an initialized apns connection
+// and adds it to the map if push is enabled for this app.
 // Call this from main for each app.
 func LaunchConnection(appID int, appString string, isPushEnabled int, appCert AppCert, isLogging bool) error {
 	if isPushEnabled == 1 {
@@ -54,11 +60,11 @@ func LaunchConnection(appID int, appString string, isPushEnabled int, appCert Ap
 	return nil
 }
 
-// newConnection returns an uninitialized connectionAPNS instance
+// newConnection returns a connectionAPNS instance
 func newConnection(appID int, stringID string, appCert *AppCert) connectionAPNS {
-	status := ApnsNoCerts
+	status := apnsNoCerts
 	if appCert != nil {
-		status = ApnsCertsFound
+		status = apnsCertsFound
 	}
 	return connectionAPNS{
 		appID:     appID,
@@ -86,7 +92,7 @@ func CloseConnection(appID int) {
 }
 
 // CloseAllConnections closes all apns connections.
-// This is called at main shutdown
+// This is called at main shutdown.
 func CloseAllConnections() {
 	for _, connectionAPNS := range mapAPNS {
 		connectionAPNS.close()

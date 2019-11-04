@@ -1,5 +1,8 @@
 package apnsservice
 
+// This filsource code includes everything to support an apns connection.
+// No part of this is exposed outside the apnsservice package.
+
 import (
 	"fmt"
 	"io"
@@ -14,12 +17,11 @@ import (
 
 type statusAPNS int
 
-// apns status codes
 const (
-	ApnsUnknown statusAPNS = iota
-	ApnsNoCerts
-	ApnsCertsFound
-	ApnsActive
+	apnsUnknown statusAPNS = iota
+	apnsNoCerts
+	apnsCertsFound
+	apnsActive
 )
 
 // connectionAPNS is a structure for managing an APNS connection.
@@ -34,7 +36,7 @@ type connectionAPNS struct {
 	cfgFeedback *apns.APNSFeedbackServiceConfig
 	chanDone    chan struct{}
 	chanDoneLog chan struct{}
-	chanSend    chan *apns.Payload
+	chanSend    chan apns.Payload
 	chanLog     chan *logEntry
 	status      statusAPNS
 	isLogging   bool
@@ -57,7 +59,7 @@ func (a *connectionAPNS) launch(isLogging bool) error {
 	a.isLogging = isLogging
 
 	switch a.status {
-	case ApnsActive, ApnsNoCerts:
+	case apnsActive, apnsNoCerts:
 		return nil
 	}
 
@@ -89,7 +91,7 @@ func (a *connectionAPNS) launch(isLogging bool) error {
 
 	a.chanDone = make(chan struct{})
 	a.chanDoneLog = make(chan struct{})
-	a.chanSend = make(chan *apns.Payload, 100)
+	a.chanSend = make(chan apns.Payload, 100)
 	a.chanLog = make(chan *logEntry, 100)
 
 	a.loggers = make(map[int]*log.Logger)
@@ -103,22 +105,22 @@ func (a *connectionAPNS) launch(isLogging bool) error {
 		go a.launchSocket(socketID)
 	}
 
-	a.status = ApnsActive
+	a.status = apnsActive
 	return nil
 }
 
 // Close shuts down the apns connection by closing the done channel
 func (a *connectionAPNS) close() {
-	if a.status == ApnsActive {
+	if a.status == apnsActive {
 		close(a.chanDone)
-		a.status = ApnsCertsFound
+		a.status = apnsCertsFound
 	}
 }
 
 // pushOne pushes one notification into the send channel.
 func (a *connectionAPNS) pushOne(payload apns.Payload) {
-	if a.status == ApnsActive { // safety first
-		a.chanSend <- &payload
+	if a.status == apnsActive { // safety first
+		a.chanSend <- payload
 	}
 }
 
@@ -133,7 +135,7 @@ func (a *connectionAPNS) logPrint(socketID int, args ...interface{}) {
 	}
 }
 
-// logPrint pushes a log entry terminated with line break.
+// logPrintln pushes a log entry terminated with line break.
 func (a *connectionAPNS) logPrintln(socketID int, args ...interface{}) {
 	if a.isLogging {
 		entry := logEntry{
@@ -144,7 +146,7 @@ func (a *connectionAPNS) logPrintln(socketID int, args ...interface{}) {
 	}
 }
 
-// logPrint pushes a log entry with string formatting.
+// logPrintf pushes a log entry with string formatting.
 func (a *connectionAPNS) logPrintf(socketID int, format string, args ...interface{}) {
 	if a.isLogging {
 		entry := logEntry{
@@ -175,14 +177,14 @@ func (a *connectionAPNS) logListener() {
 // launchSocket launches a channel listener.
 // It pulls notifications from the send channel and pushes them through the apns socket
 // until the either the send channel is empty or Apple closes the socket.
-// The done channel shuts down this listner.
+// The done channel shuts down this listener.
 func (a *connectionAPNS) launchSocket(socketID int) {
 
 	bShutdown := false
 	bConnectionGood := false
 	var connLast *apns.APNSConnection
 	intCacheSize := int(32)
-	intPayloadIdx := int(intCacheSize - 1)                           // index into cache
+	intCacheIndex := int(intCacheSize - 1)                           // index into cache
 	payloadCache := make([]apns.Payload, intCacheSize, intCacheSize) // circular array of recent payloads
 	exponentialBackoff := int(1)                                     // number of seconds between sending retries
 	const backoffLimit = 128
@@ -225,9 +227,9 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 				select {
 				case <-time.After(time.Duration(exponentialBackoff) * time.Second):
 					break
-				case connAPNS.SendChannel <- payload: // send it and cache it
-					intPayloadIdx = (intPayloadIdx + 1) % intCacheSize // increment mod 32
-					payloadCache[intPayloadIdx] = *payload
+				case connAPNS.SendChannel <- &payload: // send it and cache it
+					intCacheIndex = (intCacheIndex + 1) % intCacheSize
+					payloadCache[intCacheIndex] = payload
 					exponentialBackoff = 1
 					break
 				}
@@ -241,7 +243,7 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 				if exponentialBackoff < backoffLimit {
 					exponentialBackoff = exponentialBackoff * 2
 				}
-				a.handleCloseError(closeError, socketID, &payloadCache, intPayloadIdx)
+				a.handleCloseError(closeError, socketID, &payloadCache, intCacheIndex)
 				bConnectionGood = false
 				break
 			case <-a.chanDone:
@@ -259,7 +261,7 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 			break
 		case closeError := <-connLast.CloseChannel:
 			a.logPrintln(socketID, "Closing channel")
-			a.handleCloseError(closeError, socketID, &payloadCache, intPayloadIdx)
+			a.handleCloseError(closeError, socketID, &payloadCache, intCacheIndex)
 		}
 	}
 	a.logPrintln(socketID, "Shutting down apns service")
@@ -292,20 +294,19 @@ func (a *connectionAPNS) handleCloseError(closeError *apns.ConnectionClose, sock
 	if intUnsentCount > 0 {
 		intCacheSize := cap(*cache)
 		if intUnsentCount > intCacheSize {
-			// prevent circular buffer overflow
+			// prevent circular cache underflow
 			intUnsentCount = intCacheSize
 		}
 		for i := intUnsentCount; i > 0; i-- {
 			intIdx := (intCurrentIdx + intCacheSize - i + 1) % intCacheSize
 			payload := (*cache)[intIdx]
-			a.PushOne(payload)
+			a.pushOne(payload)
 		}
 	}
 }
 
 // getBadTokens gets list of recent bad tokens from Apple.
 func (a *connectionAPNS) getBadTokens(apnLog *log.Logger) error {
-
 	listResponse, err := apns.ConnectToFeedbackService(a.cfgFeedback)
 
 	if err == nil {
