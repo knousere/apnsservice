@@ -183,9 +183,9 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 	bShutdown := false
 	bConnectionGood := false
 	var connLast *apns.APNSConnection
-	intCacheSize := int(32)
-	intCacheIndex := int(intCacheSize - 1)                           // index into cache
-	payloadCache := make([]apns.Payload, intCacheSize, intCacheSize) // circular array of recent payloads
+	intQueueSize := int(32)
+	intQueueIndex := int(intQueueSize - 1)                           // index into queue
+	payloadQueue := make([]apns.Payload, intQueueSize, intQueueSize) // circular queue of recent payloads
 	exponentialBackoff := int(1)                                     // number of seconds between sending retries
 	const backoffLimit = 128
 
@@ -227,9 +227,9 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 				select {
 				case <-time.After(time.Duration(exponentialBackoff) * time.Second):
 					break
-				case connAPNS.SendChannel <- &payload: // send it and cache it
-					intCacheIndex = (intCacheIndex + 1) % intCacheSize
-					payloadCache[intCacheIndex] = payload
+				case connAPNS.SendChannel <- &payload: // send it and queue it
+					intQueueIndex = (intQueueIndex + 1) % intQueueSize
+					payloadQueue[intQueueIndex] = payload
 					exponentialBackoff = 1
 					break
 				}
@@ -243,7 +243,7 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 				if exponentialBackoff < backoffLimit {
 					exponentialBackoff = exponentialBackoff * 2
 				}
-				a.handleCloseError(closeError, socketID, &payloadCache, intCacheIndex)
+				a.handleCloseError(closeError, socketID, &payloadQueue, intQueueIndex)
 				bConnectionGood = false
 				break
 			case <-a.chanDone:
@@ -261,7 +261,7 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 			break
 		case closeError := <-connLast.CloseChannel:
 			a.logPrintln(socketID, "Closing channel")
-			a.handleCloseError(closeError, socketID, &payloadCache, intCacheIndex)
+			a.handleCloseError(closeError, socketID, &payloadQueue, intQueueIndex)
 		}
 	}
 	a.logPrintln(socketID, "Shutting down apns service")
@@ -272,7 +272,7 @@ func (a *connectionAPNS) launchSocket(socketID int) {
 
 // handleCloseError handles feedback after Apple closes the connection.
 func (a *connectionAPNS) handleCloseError(closeError *apns.ConnectionClose, socketID int,
-	cache *[]apns.Payload, intCurrentIdx int) {
+	queue *[]apns.Payload, intCurrentIdx int) {
 
 	a.logPrintln(socketID, "CloseError: ", closeError.Error)
 	intUnsentCount := closeError.UnsentPayloads.Len()
@@ -292,14 +292,14 @@ func (a *connectionAPNS) handleCloseError(closeError *apns.ConnectionClose, sock
 	}
 
 	if intUnsentCount > 0 {
-		intCacheSize := cap(*cache)
-		if intUnsentCount > intCacheSize {
-			// prevent circular cache underflow
-			intUnsentCount = intCacheSize
+		intQueueSize := cap(*queue)
+		if intUnsentCount > intQueueSize {
+			// prevent circular queue underflow
+			intUnsentCount = intQueueSize
 		}
 		for i := intUnsentCount; i > 0; i-- {
-			intIdx := (intCurrentIdx + intCacheSize - i + 1) % intCacheSize
-			payload := (*cache)[intIdx]
+			intIdx := (intCurrentIdx + intQueueSize - i + 1) % intQueueSize
+			payload := (*queue)[intIdx]
 			a.pushOne(payload)
 		}
 	}
